@@ -163,4 +163,4 @@ function findMatches(item, candidates, { min = 35, limit = 6 } = {}) {
   return out.slice(0, limit);
 }
 
-module.exports = { scorePair, findMatches, categoryOf, colourFamilyOf, WEIGHTS };
+module.exports = { scorePair, findMatches, categoryOf, colourFamilyOf, locationScore, timeScore, WEIGHTS };

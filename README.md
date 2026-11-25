@@ -54,12 +54,37 @@ For example, "Navy bottle" vs "Blue water bottle" in the same place and time sco
 
 Report body: `{ name, colour?, brand?, location, time?, description?, stored_at? }`. `location` must be one of the campus locations listed by `/api/meta`.
 
+### Vector matching API
+
+Run a local OpenAI-compatible embeddings server with Nomic Embed Text v1.5. With the model available in LM Studio, run:
+
+```bash
+lms load text-embedding-nomic-embed-text-v1.5 --identifier nomic-embed-text-v1.5
+lms server start --port 1234
+npm start
+```
+
+The app defaults to `http://127.0.0.1:1234/v1/embeddings` and model `nomic-embed-text-v1.5`. Set `LF_EMBEDDINGS_URL` to override the full endpoint, `LF_EMBEDDINGS_MODEL` to override the model ID, and `LF_EMBEDDINGS_API_KEY` if the server requires bearer authentication. Item text is sent to the configured endpoint.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/vector/lost` | Save a lost report and return `{ item, matches, alert }` |
+| POST | `/api/vector/found` | Save a found report and return `{ item, matches, alert }` |
+| GET | `/api/vector/items/:id/matches` | Return `{ item, matches }` for any saved report |
+
+These routes use the same report body and SQLite database as the main API. Use `POST /api/items/:id/reunite` to close a pair. The browser still uses the original routes.
+
+The vector routes rank up to six open reports of the opposite type. Cosine similarity across item names, colours, brands, and descriptions contributes 65% of the score. Category, location, and time contribute the rest. Reports with different known categories are excluded. Reports with unrecognized categories can still match through their text. Each match includes a `breakdown` with `semantic`, `category`, `location`, and `time` scores. Report creation returns an alert when the top match scores at least 68. If embedding requests fail, the API returns HTTP 503 before saving a report.
+
+Run `npm test -- --vector` with the embedding server running to check the vector routes using an in-memory database.
+
 ## Files
 
 ```
 server.js   HTTP server: REST API + static files
 db.js       SQLite schema and queries
 matcher.js  matching and scoring engine
+vector-matcher.js  embedding client and vector ranking
 parser.js   one-line report parser
 seed.js     150 fake, anonymous records
 data.js     categories and synonyms, colour families, campus locations and map layout

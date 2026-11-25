@@ -2,6 +2,7 @@
 process.env.LF_DB = ':memory:';
 const assert = require('assert');
 const { server } = require('./server');
+const testVector = process.argv.includes('--vector');
 
 let base;
 const call = async (path, body) => {
@@ -55,6 +56,13 @@ const fmt = iso => new Date(iso).toLocaleString([], { weekday: 'short', hour: 'n
   assert.strictEqual(again.item.name, 'Grey hoodie');
   assert.deepStrictEqual(again.matches.map(m => m.score), matches.map(m => m.score));
   pass('Report persisted and matches are reproducible via GET /api/items/:id/matches');
+  if (testVector) {
+    const response = await call(`/api/vector/items/${item.id}/matches`);
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(response.data.matches[0].item.id, matches[0].item.id);
+    assert.ok(response.data.matches[0].breakdown.semantic > 0);
+    pass('Vector search ranks the seeded grey hoodie first for an existing report');
+  }
 
   // 4. Synonym matching: "Navy bottle" ↔ "Blue water bottle"
   const f = (await call('/api/found', { name: 'Blue water bottle', location: 'Main Cafeteria', time: new Date().toISOString(), stored_at: 'Security Desk' })).data;
@@ -62,6 +70,11 @@ const fmt = iso => new Date(iso).toLocaleString([], { weekday: 'short', hour: 'n
   const hit = l.matches.find(m => m.item.id === f.item.id);
   assert.ok(hit && hit.score >= 80);
   pass(`"Navy bottle" matches "Blue water bottle" at ${hit.score}% (${hit.reasons.join('; ')})`);
+  if (testVector) {
+    const vector = await call(`/api/vector/items/${l.item.id}/matches`);
+    assert.strictEqual(vector.data.matches[0].item.id, f.item.id);
+    pass(`Vector search ranks "Blue water bottle" first for "Navy bottle" (${vector.data.matches[0].score}%)`);
+  }
 
   // 5. Reunite
   const r = await call(`/api/items/${item.id}/reunite`, { matchId: matches[0].item.id });
@@ -73,6 +86,26 @@ const fmt = iso => new Date(iso).toLocaleString([], { weekday: 'short', hour: 'n
   const after = (await call('/api/stats')).data;
   assert.strictEqual(after.totals.reunited, stats.totals.reunited + 2);
   pass('Marked as Reunited (both reports closed, double-reunite rejected, stats updated)');
+  if (testVector) {
+    const closed = await call(`/api/vector/items/${item.id}/matches`);
+    assert.deepStrictEqual(closed.data.matches, []);
+    const report = { location: 'Main Cafeteria', time: new Date().toISOString() };
+    const found = await call('/api/vector/found', {
+      ...report, name: 'Protractor', description: 'Clear semicircular angle measuring tool'
+    });
+    const lost = await call('/api/vector/lost', {
+      ...report, name: 'Geometry angle measurer', description: 'A transparent half-circle for measuring degrees'
+    });
+    assert.strictEqual(found.status, 201);
+    assert.strictEqual(lost.status, 201);
+    assert.strictEqual(found.data.item.category, null);
+    assert.strictEqual(lost.data.item.category, null);
+    assert.strictEqual(lost.data.matches[0].item.id, found.data.item.id);
+    const original = await call(`/api/items/${lost.data.item.id}/matches`);
+    assert.strictEqual(original.data.item.id, lost.data.item.id);
+    assert.deepStrictEqual(original.data.matches, []);
+    pass(`Vector search matched an uncategorized protractor paraphrase (${lost.data.matches[0].score}%)`);
+  }
 
   // 6. Validation
   const bad = await call('/api/lost', { name: '', location: 'Mars' });

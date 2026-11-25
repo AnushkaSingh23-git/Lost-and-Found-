@@ -5,12 +5,14 @@ const path = require('path');
 const database = require('./db');
 const { seed } = require('./seed');
 const { findMatches, categoryOf } = require('./matcher');
+const { findVectorMatches, EmbeddingServiceError } = require('./vector-matcher');
 const { parseReport } = require('./parser');
 const { CATEGORIES, COLOURS, LOCATIONS, STORAGE_POINTS } = require('./data');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = path.join(__dirname, 'public');
 const ALERT_THRESHOLD = 60;
+const VECTOR_ALERT_THRESHOLD = 68;
 
 const seeded = seed();
 if (seeded) console.log(`Seeded ${seeded} sample records.`);
@@ -57,9 +59,17 @@ function validateReport(body, type) {
   };
 }
 
+function candidatesFor(item) {
+  return database.listItems({ type: item.type === 'lost' ? 'found' : 'lost', status: 'open' });
+}
+
 function matchesFor(item) {
-  const other = database.listItems({ type: item.type === 'lost' ? 'found' : 'lost', status: 'open' });
-  return findMatches(item, other);
+  return findMatches(item, candidatesFor(item));
+}
+
+async function vectorMatchesFor(item) {
+  const matches = await findVectorMatches(item, candidatesFor(item));
+  return matches.filter(match => database.getItem(match.item.id)?.status === 'open').slice(0, 6);
 }
 
 function stats() {
@@ -120,17 +130,23 @@ async function api(req, res, url) {
     return send(res, 200, database.listItems({ type, status, q }).slice(0, limit));
   }
 
-  if (m === 'POST' && (p === '/api/lost' || p === '/api/found')) {
-    const type = p === '/api/lost' ? 'lost' : 'found';
-    const { item, error } = validateReport(await readBody(req), type);
+  const createReport = m === 'POST' && p.match(/^\/api\/(vector\/)?(lost|found)$/);
+  if (createReport) {
+    const [, vector, type] = createReport;
+    const body = await readBody(req);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return fail(res, 400, 'Please send a report object.');
+    const { item, error } = validateReport(body, type);
     if (error) return fail(res, 400, error);
+    // Finish embedding work before inserting so an unavailable provider leaves no partial report.
+    const vectorMatches = vector ? await vectorMatchesFor(item) : null;
     const saved = database.insertItem(item);
-    const matches = matchesFor(saved);
+    const matches = vectorMatches ?? matchesFor(saved);
     const best = matches[0];
+    const alertThreshold = vector ? VECTOR_ALERT_THRESHOLD : ALERT_THRESHOLD;
     return send(res, 201, {
       item: saved,
       matches,
-      alert: best && best.score >= ALERT_THRESHOLD
+      alert: best && best.score >= alertThreshold
         ? { score: best.score, message: type === 'lost'
             ? `Good news! A ${best.item.name.toLowerCase()} matching yours (${best.score}%) was handed in at ${best.item.location}.`
             : `Someone reported losing a ${best.item.name.toLowerCase()} that looks like this (${best.score}% match).` }
@@ -150,10 +166,15 @@ async function api(req, res, url) {
     return send(res, 200, { item, matchedWith: item.matched_id ? database.getItem(item.matched_id) : null });
   }
 
-  if ((mm = p.match(/^\/api\/items\/(\d+)\/matches$/)) && m === 'GET') {
-    const item = database.getItem(+mm[1]);
+  if ((mm = p.match(/^\/api\/(vector\/)?items\/(\d+)\/matches$/)) && m === 'GET') {
+    const [, vector, id] = mm;
+    const item = database.getItem(+id);
     if (!item) return fail(res, 404, 'Report not found.');
-    return send(res, 200, { item, matches: item.status === 'open' ? matchesFor(item) : [] });
+    if (item.status !== 'open') return send(res, 200, { item, matches: [] });
+    const matches = vector ? await vectorMatchesFor(item) : matchesFor(item);
+    const current = vector ? database.getItem(+id) : item;
+    if (!current) return fail(res, 404, 'Report not found.');
+    return send(res, 200, { item: current, matches: current.status === 'open' ? matches : [] });
   }
 
   if ((mm = p.match(/^\/api\/items\/(\d+)\/reunite$/)) && m === 'POST') {
@@ -203,6 +224,7 @@ const server = http.createServer(async (req, res) => {
     serveStatic(req, res, url);
   } catch (e) {
     console.error(e);
+    if (e instanceof EmbeddingServiceError) return fail(res, 503, e.message);
     fail(res, e.message === 'Invalid JSON' ? 400 : 500, e.message || 'Server error');
   }
 });
