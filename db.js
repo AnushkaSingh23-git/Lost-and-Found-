@@ -24,6 +24,13 @@ db.exec(`
     reunited_at  TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_items_type_status ON items(type, status);
+  CREATE TABLE IF NOT EXISTS item_embeddings (
+    item_id    INTEGER PRIMARY KEY,
+    model      TEXT NOT NULL,
+    text_input TEXT NOT NULL,
+    vector     BLOB NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `);
 
 const insertStmt = db.prepare(`
@@ -74,7 +81,57 @@ function markReunited(id, matchedId) {
 }
 
 function clearAll() {
-  db.exec('DELETE FROM items; DELETE FROM sqlite_sequence WHERE name = \'items\';');
+  db.exec('DELETE FROM item_embeddings; DELETE FROM items; DELETE FROM sqlite_sequence WHERE name = \'items\';');
 }
 
-module.exports = { db, insertItem, getItem, listItems, count, markReunited, clearAll };
+function getItemEmbeddings(itemIds, model) {
+  const out = new Map();
+  if (!itemIds.length) return out;
+  for (let i = 0; i < itemIds.length; i += 500) {
+    const chunk = itemIds.slice(i, i + 500);
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db.prepare(
+      `SELECT item_id, text_input, vector FROM item_embeddings WHERE model = ? AND item_id IN (${placeholders})`
+    ).all(model, ...chunk);
+    for (const row of rows) {
+      const bytes = Uint8Array.from(row.vector);
+      out.set(row.item_id, {
+        textInput: row.text_input,
+        vector: new Float32Array(bytes.buffer)
+      });
+    }
+  }
+  return out;
+}
+
+const upsertEmbeddingStmt = db.prepare(`
+  INSERT INTO item_embeddings (item_id, model, text_input, vector, updated_at)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(item_id) DO UPDATE SET
+    model = excluded.model,
+    text_input = excluded.text_input,
+    vector = excluded.vector,
+    updated_at = excluded.updated_at
+`);
+
+function saveItemEmbeddings(entries, model) {
+  if (!entries.length) return;
+  const now = new Date().toISOString();
+  db.exec('BEGIN');
+  try {
+    for (const entry of entries) {
+      const blob = Buffer.from(entry.vector.buffer, entry.vector.byteOffset, entry.vector.byteLength);
+      upsertEmbeddingStmt.run(entry.itemId, model, entry.textInput, blob, now);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+function countEmbeddings(model) {
+  return db.prepare('SELECT COUNT(*) AS n FROM item_embeddings WHERE model = ?').get(model).n;
+}
+
+module.exports = { db, insertItem, getItem, listItems, count, markReunited, clearAll, getItemEmbeddings, saveItemEmbeddings, countEmbeddings };
