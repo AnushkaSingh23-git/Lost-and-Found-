@@ -3,6 +3,7 @@
 const { SYN_INDEX, COLOURS, COLOUR_NEAR, LOCATIONS } = require('./data');
 
 const WEIGHTS = { item: 30, colour: 20, location: 20, time: 10, brand: 10, description: 10 };
+
 const STOP = new Set(('a an the and or of in on at to with for from by is it its was were has have had this that these those near some very ' +
   'my i lost found small big old new one two item thing please left front back side attached included').split(' '));
 
@@ -32,6 +33,7 @@ function categoryOf(text) {
 function colourFamilyOf(text) {
   const words = String(text || '').toLowerCase().match(/[a-z-]+/g) || [];
   for (const w of words) if (ALL_COLOUR_WORDS.has(w)) return ALL_COLOUR_WORDS.get(w);
+  
   return null;
 }
 
@@ -93,6 +95,7 @@ function scorePair(lost, found) {
 
   // --- Colour: families (navy ≈ blue), close shades earn partial credit ---
   const cl = colourFamilyOf(lost.colour) || colourFamilyOf(lost.name) || colourFamilyOf(lost.description);
+  
   const cf = colourFamilyOf(found.colour) || colourFamilyOf(found.name) || colourFamilyOf(found.description);
   let colour;
   if (!cl || !cf) colour = 0.4;
