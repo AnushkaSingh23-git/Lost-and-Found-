@@ -3,7 +3,14 @@
 */
 (() => {
   const $app = document.getElementById('app');
-  const state = { meta: null, prefill: null, lastResult: null, browse: { tab: 'open', q: '' } };
+  const state = {
+    meta: null,
+    vector: null,
+    matchMode: 'vector',
+    prefill: null,
+    lastResult: null,
+    browse: { tab: 'open', q: '', semantic: true }
+  };
 
   // ---------- Utilities ----------
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -116,7 +123,25 @@
     });
   }
 
-  function itemRow(it, { actions = true } = {}) {
+  function vectorBadge() {
+    const v = state.vector;
+    if (!v) return '';
+    return v.available
+      ? `<span class="status-pill online" title="${esc(v.model)} @ ${esc(v.endpoint)}">● Vector AI ready</span>`
+      : `<span class="status-pill offline" title="${esc(v.error || 'Embedding server unreachable')}">○ Vector AI offline</span>`;
+  }
+
+  function modeSwitch(idPrefix = 'mode') {
+    return `<div class="mode-bar">
+      <div class="seg" role="group" aria-label="Matching engine">
+        <button type="button" data-mode="vector" class="${state.matchMode === 'vector' ? 'active' : ''}">✨ Vector AI</button>
+        <button type="button" data-mode="classic" class="${state.matchMode === 'classic' ? 'active' : ''}">📏 Classic rules</button>
+      </div>
+      ${vectorBadge()}
+    </div>`;
+  }
+
+  function itemRow(it, { actions = true, badge = '' } = {}) {
     const hex = colourHex(it.colour || it.name);
     const status = it.status === 'reunited'
       ? `<span class="pill reunited">✓ Reunited</span>`
@@ -124,7 +149,7 @@
     return `<div class="item-row">
       <div class="item-ico">${icon(it.category)}</div>
       <div>
-        <div class="row" style="gap:8px"><h3>${esc(it.name)}</h3>${status}</div>
+        <div class="row" style="gap:8px"><h3>${esc(it.name)}</h3>${status}${badge ? `<span class="pill semantic">${esc(badge)}</span>` : ''}</div>
         <div class="meta">
           ${hex ? `<span><i class="dot" style="background:${hex}"></i> ${esc(it.colour || '')}</span>` : ''}
           ${it.brand ? `<span>🏷️ ${esc(it.brand)}</span>` : ''}
@@ -422,7 +447,10 @@
           <label for="description">Distinctive Features <span class="opt">stickers, scratches, engravings, keychains</span></label>
           <textarea class="input" id="description" name="description" placeholder="${isLost ? 'e.g. Has college sticker on back, small dent on lid' : 'e.g. Found on third floor study table, blue lanyard attached'}"></textarea>
         </div>
-
+        <div class="field">
+          <span class="label">Matching Engine</span>
+          <div id="reportModeBar">${modeSwitch('report')}</div>
+        </div>
         <div class="form-actions">
           <button class="btn btn-primary" type="submit" id="submitBtn">
             ${isLost ? '🔍 Submit & Find Matches' : '🤲 Submit & Find Owner'}
@@ -505,6 +533,11 @@
     el('qfBtn').onclick = doQuickFill;
     el('qf').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); doQuickFill(); } };
 
+    f.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
+      state.matchMode = b.dataset.mode;
+      f.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('active', x.dataset.mode === state.matchMode));
+    });
+
     f.onsubmit = async e => {
       e.preventDefault();
       const err = $app.querySelector('#err');
@@ -513,7 +546,7 @@
       if (!loc) { err.textContent = 'Please choose a campus location.'; return; }
       const btn = el('submitBtn');
       btn.disabled = true;
-      btn.textContent = 'Analyzing matches…';
+      btn.textContent = state.matchMode === 'vector' ? 'Embedding & analyzing…' : 'Analyzing matches…';
       try {
         const body = {
           name: el('name').value,
@@ -524,8 +557,10 @@
           description: el('description').value,
           stored_at: el('stored')?.value
         };
-        const result = await api('/api/' + type, { method: 'POST', body });
+        const endpoint = state.matchMode === 'vector' ? `/api/vector/${type}` : `/api/${type}`;
+        const result = await api(endpoint, { method: 'POST', body });
         result.seconds = Math.round((Date.now() - t0) / 1000);
+        result.mode = state.matchMode;
         state.lastResult = result;
         location.hash = '#/matches/' + result.item.id;
       } catch (ex) {
@@ -541,7 +576,9 @@
     const it = m.item;
     const c = m.score >= 75 ? '#1d4ed8' : m.score >= 55 ? '#3b82f6' : '#93c5fd';
     const label = m.score >= 75 ? 'Strong match' : m.score >= 55 ? 'Likely match' : 'Possible match';
-    const parts = [['item', 'Item'], ['colour', 'Colour'], ['location', 'Location'], ['time', 'Time'], ['brand', 'Brand'], ['description', 'Details']];
+    const parts = 'semantic' in (m.breakdown || {})
+      ? [['semantic', 'Semantic'], ['category', 'Category'], ['location', 'Location'], ['time', 'Time']]
+      : [['item', 'Item'], ['colour', 'Colour'], ['location', 'Location'], ['time', 'Time'], ['brand', 'Brand'], ['description', 'Details']];
     const canReunite = base.status === 'open' && it.status === 'open';
 
     return `<article class="match ${i === 0 && m.score >= 55 ? 'top' : ''}">
@@ -578,14 +615,28 @@
     $app.innerHTML = `<div class="skeleton" style="height:120px"></div><div class="skeleton mt" style="height:220px"></div>`;
     const fresh = state.lastResult && state.lastResult.item.id === +id ? state.lastResult : null;
     state.lastResult = null;
+    if (fresh?.mode) state.matchMode = fresh.mode;
     let data;
     try {
-      data = await api(`/api/items/${id}/matches`);
+      const endpoint = state.matchMode === 'vector' ? `/api/vector/items/${id}/matches` : `/api/items/${id}/matches`;
+      data = await api(endpoint);
     } catch (e) {
-      $app.innerHTML = `<div class="card empty"><div class="big">🤷</div><p>${esc(e.message)}</p><a class="btn btn-primary" href="#/">Back to Dashboard</a></div>`;
-      return;
+      if (state.matchMode === 'vector') {
+        try {
+          data = await api(`/api/items/${id}/matches`);
+          state.matchMode = 'classic';
+          toast('⚠️ Vector server unavailable — switched to Classic rules.');
+        } catch (e2) {
+          $app.innerHTML = `<div class="card empty"><div class="big">🤷</div><p>${esc(e2.message)}</p><a class="btn btn-primary" href="#/">Back to Dashboard</a></div>`;
+          return;
+        }
+      } else {
+        $app.innerHTML = `<div class="card empty"><div class="big">🤷</div><p>${esc(e.message)}</p><a class="btn btn-primary" href="#/">Back to Dashboard</a></div>`;
+        return;
+      }
     }
     const { item, matches } = data;
+    const alertThreshold = data.alertThreshold ?? (state.matchMode === 'vector' ? 68 : 60);
     let partner = null;
     if (item.status === 'reunited' && item.matched_id) partner = (await api(`/api/items/${item.matched_id}`)).item;
     const best = matches[0];
@@ -601,14 +652,13 @@
         </div>
       </div>` : ''}
 
-      ${best && best.score >= 60 && item.status === 'open' ? `<div class="alert-banner" style="margin-bottom:18px">
+      ${best && best.score >= alertThreshold && item.status === 'open' ? `<div class="alert-banner" style="margin-bottom:18px">
         <span class="bell">🔔</span>
         <div>
           <b>High-Confidence Match Detected!</b>
           <div style="opacity:.92;font-size:14px">${esc(best.item.name)} at ${esc(best.item.location)} — ${best.score}% match confidence.</div>
         </div>
       </div>` : ''}
-
       <div class="card report-summary">
         <div class="item-ico">${icon(item.category)}</div>
         <div>
@@ -638,6 +688,7 @@
         </div>` : `
         <div class="row mt" style="margin-bottom:14px">
           <h2 style="font-size:20px">${matches.length ? `🎯 ${matches.length} Smart Match Candidate${matches.length > 1 ? 's' : ''}` : 'No matches found yet'}</h2>
+          ${modeSwitch('matches')}
           <span class="spacer"></span>
           ${item.status === 'open' ? `<button class="btn btn-light btn-sm" id="selfReunite">${item.type === 'lost' ? 'I found it another way' : 'Owner picked it up'}</button>` : ''}
         </div>
@@ -647,10 +698,19 @@
         </div>`}
     </div>`;
 
+    $app.querySelectorAll('[data-mode]').forEach(btn => btn.onclick = () => {
+      if (btn.dataset.mode === state.matchMode) return;
+      state.matchMode = btn.dataset.mode;
+      viewMatches(id);
+    });
+
     if (fresh && fresh.alert) {
+      const alertItem = best?.item || fresh.matches?.[0]?.item;
       modal(`<div class="big">🔔</div><h2>Match Detected!</h2><p>${esc(fresh.alert.message)}</p>
         <div class="row"><button class="btn btn-primary" data-close>Review Match</button></div>`);
-      toast(`🔔 <b>${fresh.alert.score}% match</b> — ${esc(best.item.name)} at ${esc(best.item.location)}`, '', 6000);
+      if (alertItem) {
+        toast(`🔔 <b>${fresh.alert.score}% match</b> — ${esc(alertItem.name)} at ${esc(alertItem.location)}`, '', 6000);
+      }
     }
 
     const reunite = async (matchId) => {
@@ -684,6 +744,7 @@
   // ---------- View: Directory (Browse Reports) ----------
   async function viewBrowse() {
     const b = state.browse;
+    if (state.vector && !state.vector.available) b.semantic = false;
     $app.innerHTML = `<div class="anim">
       <div class="page-head">
         <div class="big-ico">📋</div>
@@ -700,8 +761,9 @@
         </div>
         <label class="search">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input id="q" placeholder="Filter by keyword (bottle, navy, library, Apple…)" value="${esc(b.q)}" autocomplete="off">
+          <input id="q" placeholder="Filter by keyword or description (bottle, angle measurer, Apple…)" value="${esc(b.q)}" autocomplete="off">
         </label>
+        <button type="button" id="semToggle" class="chip ${b.semantic ? 'on' : ''}">✨ Vector search</button>
       </div>
 
       <div class="items" id="list"><div class="skeleton" style="height:320px"></div></div>
@@ -719,11 +781,23 @@
         params.set('status', b.tab);
       }
       if (b.q) params.set('q', b.q);
-
-      const rows = await api('/api/items?' + params);
+      let rows;
+      let usedSemantic = false;
+      if (b.q && b.semantic) {
+        try {
+          const data = await api('/api/vector/search?' + params);
+          rows = data.results;
+          usedSemantic = true;
+        } catch {
+          rows = await api('/api/items?' + params);
+        }
+      } else {
+        rows = await api('/api/items?' + params);
+      }
       if (my !== seq) return;
       list.innerHTML = rows.length
-        ? `<div class="muted" style="font-size:13px;padding:2px 4px;font-weight:600">Showing ${rows.length} ${rows.length === 1 ? 'report' : 'reports'}</div>` + rows.map(r => itemRow(r)).join('')
+        ? `<div class="muted" style="font-size:13px;padding:2px 4px;font-weight:600">Showing ${rows.length} ${rows.length === 1 ? 'report' : 'reports'}${usedSemantic ? ' · ranked by vector similarity' : ''}</div>` +
+          rows.map(r => usedSemantic ? itemRow(r.item, { badge: `${r.score}% match` }) : itemRow(r)).join('')
         : `<div class="card empty"><div class="big">🔎</div><p>No matching reports found for this filter.</p></div>`;
     };
 
@@ -732,7 +806,12 @@
       $app.querySelectorAll('[data-tab]').forEach(x => x.classList.toggle('active', x === t));
       load();
     });
-
+    const semToggle = $app.querySelector('#semToggle');
+    semToggle.onclick = () => {
+      b.semantic = !b.semantic;
+      semToggle.classList.toggle('on', b.semantic);
+      if (b.q) load();
+    };
     let deb;
     $app.querySelector('#q').oninput = e => {
       clearTimeout(deb);
@@ -749,7 +828,15 @@
     document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === (page || 'home')));
     window.scrollTo({ top: 0 });
     try {
-      if (!state.meta) state.meta = await api('/api/meta');
+      if (!state.meta) {
+        const [meta, vector] = await Promise.all([
+          api('/api/meta'),
+          api('/api/vector/status').catch(() => ({ available: false, modelLoaded: false }))
+        ]);
+        state.meta = meta;
+        state.vector = vector;
+        if (!vector.available) state.matchMode = 'classic';
+      }
       if (page === 'lost' || page === 'found') viewReport(page);
       else if (page === 'matches' && arg) await viewMatches(arg);
       else if (page === 'browse') await viewBrowse();

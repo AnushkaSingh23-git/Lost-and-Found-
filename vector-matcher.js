@@ -1,8 +1,18 @@
 const { locationScore, timeScore } = require('./matcher');
+const database = require('./db');
 
-const endpoint = process.env.LF_EMBEDDINGS_URL || 'http://127.0.0.1:1234/v1/embeddings';
-const model = process.env.LF_EMBEDDINGS_MODEL || 'nomic-embed-text-v1.5';
+function resolveEmbeddingsUrl(raw) {
+  const base = (raw || 'http://172.16.0.2:1234/v1/embeddings').trim().replace(/\/+$/, '');
+  if (base.endsWith('/v1/embeddings') || base.endsWith('/embeddings')) return base;
+  if (base.endsWith('/v1')) return `${base}/embeddings`;
+  return `${base}/v1/embeddings`;
+}
+
+const endpoint = resolveEmbeddingsUrl(process.env.LF_EMBEDDINGS_URL);
+const modelsEndpoint = endpoint.replace(/\/embeddings$/, '/models');
+const model = process.env.LF_EMBEDDINGS_MODEL || 'text-embedding-nomic-embed-text-v1.5@q8_0';
 const apiKey = process.env.LF_EMBEDDINGS_API_KEY;
+const timeoutMs = Math.max(1000, Number(process.env.LF_EMBEDDINGS_TIMEOUT_MS) || 30000);
 const useNomicPrefixes = model.toLowerCase().includes('nomic-embed-text');
 const cache = new Map();
 const batchSize = 8;
@@ -36,7 +46,7 @@ async function embedBatch(input) {
       method: 'POST',
       headers,
       body: JSON.stringify({ model, input, encoding_format: 'float' }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(timeoutMs),
       redirect: 'error'
     });
     if (!response.ok) throw new Error(`Embedding service returned HTTP ${response.status}`);
@@ -67,6 +77,63 @@ async function embed(texts) {
   return texts.map(text => vectors.get(text));
 }
 
+async function embedWithDocuments(queryText, candidates) {
+  const candidateTexts = candidates.map(c => reportText(c, 'document'));
+  const savedIds = candidates.filter(c => c.id != null).map(c => c.id);
+  const stored = savedIds.length ? database.getItemEmbeddings(savedIds, model) : new Map();
+
+  const candidateVectors = new Array(candidates.length);
+  const textsToEmbed = [queryText];
+  const missingIndices = [];
+  const pendingPersist = [];
+
+  candidates.forEach((candidate, index) => {
+    const text = candidateTexts[index];
+    const hit = candidate.id != null ? stored.get(candidate.id) : null;
+    if (hit && hit.textInput === text) {
+      candidateVectors[index] = hit.vector;
+      cache.set(text, hit.vector);
+      return;
+    }
+    if (cache.has(text)) {
+      const vec = cache.get(text);
+      candidateVectors[index] = vec;
+      if (candidate.id != null) pendingPersist.push({ itemId: candidate.id, textInput: text, vector: vec });
+      return;
+    }
+    missingIndices.push(index);
+    textsToEmbed.push(text);
+  });
+
+  const embedded = await embed(textsToEmbed);
+  const queryVector = embedded[0];
+
+  missingIndices.forEach((candidateIdx, i) => {
+    const vec = embedded[i + 1];
+    candidateVectors[candidateIdx] = vec;
+    const candidate = candidates[candidateIdx];
+    if (candidate.id != null) {
+      pendingPersist.push({ itemId: candidate.id, textInput: candidateTexts[candidateIdx], vector: vec });
+    }
+  });
+
+  if (pendingPersist.length) {
+    database.saveItemEmbeddings(pendingPersist, model);
+  }
+
+  return { queryVector, candidateVectors };
+}
+
+async function indexItemEmbedding(item) {
+  if (!item || item.id == null) return null;
+  const text = reportText(item, 'document');
+  const stored = database.getItemEmbeddings([item.id], model).get(item.id);
+  if (stored && stored.textInput === text) return stored.vector;
+  const [vector] = await embed([text]);
+  database.saveItemEmbeddings([{ itemId: item.id, textInput: text, vector }], model);
+  return vector;
+}
+
 function similarity(a, b) {
   if (a.length !== b.length) {
     cache.clear();
@@ -76,12 +143,14 @@ function similarity(a, b) {
 }
 
 async function findVectorMatches(item, candidates) {
-  const eligible = candidates.filter(candidate => !item.category || !candidate.category || item.category === candidate.category);
+  const eligible = candidates.filter(candidate =>
+    candidate.id !== item.id &&
+    (!item.category || !candidate.category || item.category === candidate.category)
+  );
   if (!eligible.length) return [];
-  const texts = eligible.map(candidate => reportText(candidate, 'document'));
-  const [query, ...vectors] = await embed([reportText(item, 'query'), ...texts]);
+  const { queryVector, candidateVectors } = await embedWithDocuments(reportText(item, 'query'), eligible);
   return eligible.flatMap((candidate, i) => {
-    const semantic = similarity(query, vectors[i]);
+    const semantic = similarity(queryVector, candidateVectors[i]);
     const sameCategory = Boolean(item.category && item.category === candidate.category);
     if (semantic < (sameCategory ? 0.5 : 0.55)) return [];
     const category = sameCategory ? 1 : 0.5;
@@ -104,4 +173,66 @@ async function findVectorMatches(item, candidates) {
   }).sort((a, b) => b.score - a.score);
 }
 
-module.exports = { findVectorMatches, EmbeddingServiceError };
+async function searchItemsByVector(queryText, items, { limit = 50, minSemantic = 0.45 } = {}) {
+  const q = String(queryText || '').trim();
+  if (!q || !items.length) return [];
+  const formattedQuery = useNomicPrefixes ? `search_query: ${q}` : q;
+  const { queryVector, candidateVectors } = await embedWithDocuments(formattedQuery, items);
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+
+  return items.flatMap((item, i) => {
+    const semantic = similarity(queryVector, candidateVectors[i]);
+    const haystack = [item.name, item.category, item.colour, item.brand, item.location, item.description]
+      .filter(Boolean).join(' ').toLowerCase();
+    const lexical = terms.length > 0 && terms.every(t => haystack.includes(t));
+    if (!lexical && semantic < minSemantic) return [];
+    const score = Math.round(Math.min(1, semantic + (lexical ? 0.15 : 0)) * 100);
+    return [{ item, score, semantic: Math.round(semantic * 100), lexical }];
+  }).sort((a, b) => b.score - a.score || b.semantic - a.semantic).slice(0, limit);
+}
+
+async function getVectorStatus() {
+  const headers = {};
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  try {
+    const response = await fetch(modelsEndpoint, {
+      headers,
+      signal: AbortSignal.timeout(3000),
+      redirect: 'error'
+    });
+    if (!response.ok) {
+      return { available: false, endpoint, model, modelLoaded: false, error: `HTTP ${response.status}` };
+    }
+    const body = await response.json();
+    const ids = Array.isArray(body?.data) ? body.data.map(m => m.id) : [];
+    const modelLoaded = ids.includes(model);
+    return {
+      available: true,
+      endpoint,
+      model,
+      modelLoaded,
+      indexedCount: database.countEmbeddings(model),
+      totalItems: database.count()
+    };
+  } catch (err) {
+    return {
+      available: false,
+      endpoint,
+      model,
+      modelLoaded: false,
+      indexedCount: database.countEmbeddings(model),
+      totalItems: database.count(),
+      error: err.message
+    };
+  }
+}
+
+module.exports = {
+  findVectorMatches,
+  searchItemsByVector,
+  indexItemEmbedding,
+  getVectorStatus,
+  EmbeddingServiceError,
+  endpoint,
+  model
+};

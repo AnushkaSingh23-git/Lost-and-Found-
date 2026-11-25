@@ -56,12 +56,24 @@ const fmt = iso => new Date(iso).toLocaleString([], { weekday: 'short', hour: 'n
   assert.strictEqual(again.item.name, 'Grey hoodie');
   assert.deepStrictEqual(again.matches.map(m => m.score), matches.map(m => m.score));
   pass('Report persisted and matches are reproducible via GET /api/items/:id/matches');
+  const vecStatus = await call('/api/vector/status');
+  assert.strictEqual(vecStatus.status, 200);
+  assert.strictEqual(typeof vecStatus.data.available, 'boolean');
+  assert.ok(vecStatus.data.endpoint && vecStatus.data.model);
+  pass(`Vector status endpoint responded (available=${vecStatus.data.available}, model=${vecStatus.data.model})`);
+
   if (testVector) {
+    assert.strictEqual(vecStatus.data.available, true, 'LM Studio embedding server must be reachable for --vector tests');
+    assert.strictEqual(vecStatus.data.modelLoaded, true, `Configured model ${vecStatus.data.model} must be loaded`);
     const response = await call(`/api/vector/items/${item.id}/matches`);
     assert.strictEqual(response.status, 200);
+    assert.strictEqual(response.data.mode, 'vector');
     assert.strictEqual(response.data.matches[0].item.id, matches[0].item.id);
     assert.ok(response.data.matches[0].breakdown.semantic > 0);
-    pass('Vector search ranks the seeded grey hoodie first for an existing report');
+    assert.strictEqual(response.data.matches[0].breakdown.category, 100);
+    const afterFirstStatus = (await call('/api/vector/status')).data;
+    assert.ok(afterFirstStatus.indexedCount > 0, 'candidate embeddings should be persisted in SQLite');
+    pass(`Vector search ranks the seeded grey hoodie first and cached ${afterFirstStatus.indexedCount} embeddings in SQLite`);
   }
 
   // 4. Synonym matching: "Navy bottle" ↔ "Blue water bottle"
@@ -98,13 +110,32 @@ const fmt = iso => new Date(iso).toLocaleString([], { weekday: 'short', hour: 'n
     });
     assert.strictEqual(found.status, 201);
     assert.strictEqual(lost.status, 201);
+    assert.strictEqual(found.data.mode, 'vector');
+    assert.strictEqual(lost.data.mode, 'vector');
     assert.strictEqual(found.data.item.category, null);
     assert.strictEqual(lost.data.item.category, null);
     assert.strictEqual(lost.data.matches[0].item.id, found.data.item.id);
+    assert.ok(lost.data.alert && lost.data.alert.score >= 68, 'vector alert should fire above threshold 68');
     const original = await call(`/api/items/${lost.data.item.id}/matches`);
     assert.strictEqual(original.data.item.id, lost.data.item.id);
     assert.deepStrictEqual(original.data.matches, []);
-    pass(`Vector search matched an uncategorized protractor paraphrase (${lost.data.matches[0].score}%)`);
+    pass(`Vector search matched an uncategorized protractor paraphrase (${lost.data.matches[0].score}%) and fired alert`);
+
+    // Semantic Browse Search
+    const semSearch = await call('/api/vector/search?q=' + encodeURIComponent('half circle degree tool') + '&type=found&status=open');
+    assert.strictEqual(semSearch.status, 200);
+    assert.strictEqual(semSearch.data.mode, 'vector');
+    assert.ok(semSearch.data.results.some(r => r.item.id === found.data.item.id), 'semantic search should find Protractor from paraphrase');
+    pass(`Semantic browse search found "${found.data.item.name}" for query "half circle degree tool"`);
+
+    // Cross-category exclusion
+    const backpack = await call('/api/vector/lost', {
+      name: 'Orange hiking backpack', colour: 'Orange', location: 'Bus Stop',
+      time: new Date().toISOString(), description: 'Large camping rucksack with aluminum frame'
+    });
+    assert.strictEqual(backpack.status, 201);
+    assert.ok(backpack.data.matches.every(m => !m.item.category || m.item.category === 'Backpack'));
+    pass('Vector search respects category boundaries');
   }
 
   // 6. Validation

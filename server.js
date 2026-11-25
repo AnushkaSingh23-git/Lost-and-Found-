@@ -5,7 +5,7 @@ const path = require('path');
 const database = require('./db');
 const { seed } = require('./seed');
 const { findMatches, categoryOf } = require('./matcher');
-const { findVectorMatches, EmbeddingServiceError } = require('./vector-matcher');
+const { findVectorMatches, searchItemsByVector, indexItemEmbedding, getVectorStatus, EmbeddingServiceError } = require('./vector-matcher');
 const { parseReport } = require('./parser');
 const { CATEGORIES, COLOURS, LOCATIONS, STORAGE_POINTS } = require('./data');
 
@@ -122,6 +122,26 @@ async function api(req, res, url) {
 
   if (m === 'GET' && p === '/api/stats') return send(res, 200, stats());
 
+  if (m === 'GET' && p === '/api/vector/status') {
+    return send(res, 200, await getVectorStatus());
+  }
+
+  if (m === 'GET' && p === '/api/vector/search') {
+    const type = url.searchParams.get('type') || undefined;
+    const status = url.searchParams.get('status') || undefined;
+    const q = clean(url.searchParams.get('q'), 120);
+    const limit = Math.min(500, +url.searchParams.get('limit') || 50);
+    const items = database.listItems({ type, status });
+    if (!q) {
+      return send(res, 200, {
+        mode: 'vector',
+        results: items.slice(0, limit).map(item => ({ item, score: 100, semantic: 100, lexical: true }))
+      });
+    }
+    const results = await searchItemsByVector(q, items, { limit });
+    return send(res, 200, { mode: 'vector', results });
+  }
+
   if (m === 'GET' && p === '/api/items') {
     const type = url.searchParams.get('type') || undefined;
     const status = url.searchParams.get('status') || undefined;
@@ -140,10 +160,15 @@ async function api(req, res, url) {
     // Finish embedding work before inserting so an unavailable provider leaves no partial report.
     const vectorMatches = vector ? await vectorMatchesFor(item) : null;
     const saved = database.insertItem(item);
+    if (vector) {
+      await indexItemEmbedding(saved).catch(err => console.warn('Vector index warning:', err.message));
+    }
     const matches = vectorMatches ?? matchesFor(saved);
     const best = matches[0];
     const alertThreshold = vector ? VECTOR_ALERT_THRESHOLD : ALERT_THRESHOLD;
     return send(res, 201, {
+      mode: vector ? 'vector' : 'classic',
+      alertThreshold,
       item: saved,
       matches,
       alert: best && best.score >= alertThreshold
@@ -170,11 +195,13 @@ async function api(req, res, url) {
     const [, vector, id] = mm;
     const item = database.getItem(+id);
     if (!item) return fail(res, 404, 'Report not found.');
-    if (item.status !== 'open') return send(res, 200, { item, matches: [] });
+    const mode = vector ? 'vector' : 'classic';
+    const alertThreshold = vector ? VECTOR_ALERT_THRESHOLD : ALERT_THRESHOLD;
+    if (item.status !== 'open') return send(res, 200, { item, matches: [], mode, alertThreshold });
     const matches = vector ? await vectorMatchesFor(item) : matchesFor(item);
     const current = vector ? database.getItem(+id) : item;
     if (!current) return fail(res, 404, 'Report not found.');
-    return send(res, 200, { item: current, matches: current.status === 'open' ? matches : [] });
+    return send(res, 200, { item: current, matches: current.status === 'open' ? matches : [], mode, alertThreshold });
   }
 
   if ((mm = p.match(/^\/api\/items\/(\d+)\/reunite$/)) && m === 'POST') {

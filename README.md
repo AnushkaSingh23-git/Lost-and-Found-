@@ -56,27 +56,23 @@ Report body: `{ name, colour?, brand?, location, time?, description?, stored_at?
 
 ### Vector matching API
 
-Run a local OpenAI-compatible embeddings server with Nomic Embed Text v1.5. With the model available in LM Studio, run:
+Run LM Studio (or any OpenAI-compatible embeddings server) with Nomic Embed Text v1.5 (`text-embedding-nomic-embed-text-v1.5@q8_0`).
 
-```bash
-lms load text-embedding-nomic-embed-text-v1.5 --identifier nomic-embed-text-v1.5
-lms server start --port 1234
-npm start
-```
-
-The app defaults to `http://127.0.0.1:1234/v1/embeddings` and model `nomic-embed-text-v1.5`. Set `LF_EMBEDDINGS_URL` to override the full endpoint, `LF_EMBEDDINGS_MODEL` to override the model ID, and `LF_EMBEDDINGS_API_KEY` if the server requires bearer authentication. Item text is sent to the configured endpoint.
+The app defaults to `http://172.16.0.2:1234/v1/embeddings` and model `text-embedding-nomic-embed-text-v1.5@q8_0`. Set `LF_EMBEDDINGS_URL` to override the server URL or full endpoint, `LF_EMBEDDINGS_MODEL` to override the model ID, `LF_EMBEDDINGS_TIMEOUT_MS` to adjust request timeout (default `30000`), and `LF_EMBEDDINGS_API_KEY` if the server requires bearer authentication. Item text is sent to the configured endpoint and document embeddings are cached in SQLite (`item_embeddings`).
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/api/vector/status` | Check embedding server availability, active model, and indexed item count |
+| GET | `/api/vector/search?q=&type=&status=` | Semantic + lexical search across reports |
 | POST | `/api/vector/lost` | Save a lost report and return `{ item, matches, alert }` |
 | POST | `/api/vector/found` | Save a found report and return `{ item, matches, alert }` |
 | GET | `/api/vector/items/:id/matches` | Return `{ item, matches }` for any saved report |
 
-These routes use the same report body and SQLite database as the main API. Use `POST /api/items/:id/reunite` to close a pair. The browser still uses the original routes.
+These routes use the same report body and SQLite database as the main API. Use `POST /api/items/:id/reunite` to close a pair. The web UI integrates Vector AI matching (with a toggle to Classic rules) and semantic search in Browse when the embedding server is available.
 
 The vector routes rank up to six open reports of the opposite type. Cosine similarity across item names, colours, brands, and descriptions contributes 65% of the score. Category, location, and time contribute the rest. Reports with different known categories are excluded. Reports with unrecognized categories can still match through their text. Each match includes a `breakdown` with `semantic`, `category`, `location`, and `time` scores. Report creation returns an alert when the top match scores at least 68. If embedding requests fail, the API returns HTTP 503 before saving a report.
 
-Run `npm test -- --vector` with the embedding server running to check the vector routes using an in-memory database.
+Run `npm run test:vector` (or `npm test -- --vector`) with the embedding server running to verify all vector routes, semantic search, and SQLite embedding caching using an in-memory database.
 
 ## Files
 
