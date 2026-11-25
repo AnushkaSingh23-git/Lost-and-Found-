@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BLUE – Lost and Found, Reinvented</title>
+  <meta name="description" content="BLUE helps students find lost items on campus by matching lost and found reports.">
+  <meta name="theme-color" content="#1d4ed8">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%231d4ed8'/><circle cx='14' cy='14' r='7' fill='none' stroke='white' stroke-width='3'/><path d='M19 19l6 6' stroke='white' stroke-width='3' stroke-linecap='round'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="2.6"/><path d="M15 15l5 5" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
+      </span>
+      <span class="brand-text"><b>BLUE</b><small>Lost and Found, Reinvented</small></span>
+    </a>
+    <nav class="nav" aria-label="Main">
+      <a href="#/" data-nav="home"><span class="ni">🏠</span><span>Home</span></a>
+      <a href="#/lost" data-nav="lost"><span class="ni">🔍</span><span>I lost</span></a>
+      <a href="#/found" data-nav="found"><span class="ni">🤲</span><span>I found</span></a>
+      <a href="#/browse" data-nav="browse"><span class="ni">📋</span><span>Browse</span></a>
+    </nav>
+  </header>
+
+  <main id="app" class="container" tabindex="-1"></main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="modal" class="modal" hidden></div>
+
+  <footer class="footer">BLUE · Lost and Found, Reinvented · Reports are anonymous — no names or phone numbers stored.</footer>
+  <script src="app.js"></script>
+</body>
+</html>

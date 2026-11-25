@@ -1,0 +1,12 @@
+{
+  "name": "blue-lost-and-found",
+  "version": "1.0.0",
+  "description": "BLUE – Lost and Found, Reinvented. Smart lost & found matching for college campuses.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "seed": "node --no-warnings seed.js --reset",
+    "test": "node --no-warnings test.js"
+  },
+  "engines": { "node": ">=22.5" }
+}
