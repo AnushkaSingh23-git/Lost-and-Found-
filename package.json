@@ -7,7 +7,8 @@
     "start": "node --no-warnings server.js",
     "seed": "node --no-warnings seed.js --reset",
     "test": "node --no-warnings test.js",
-    "test:vector": "node --no-warnings test.js --vector"
+    "test:vector": "node --no-warnings test.js --vector",
+    "test:accuracy": "node --no-warnings benchmark.js"
   },
   "engines": { "node": ">=22.5" }
 }

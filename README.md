@@ -74,6 +74,26 @@ The vector routes rank up to six open reports of the opposite type. Cosine simil
 
 Run `npm run test:vector` (or `npm test -- --vector`) with the embedding server running to verify all vector routes, semantic search, and SQLite embedding caching using an in-memory database.
 
+Run `npm run test:accuracy` with the embedding server running to compare fuzzy and vector match rankings on seeded pairs and paraphrases, and count false alerts for reports with no counterpart. The benchmark uses an in-memory database.
+
+#### Accuracy benchmark results
+
+This run started with 150 seeded reports and used `text-embedding-nomic-embed-text-v1.5`. Each Top *k* column counts cases where the known match appeared among the first *k* results.
+
+| Case | Matcher | Top 1 | Top 3 | Top 6 |
+|---|---|---:|---:|---:|
+| Seeded pairs | Fuzzy | 28/28 | 28/28 | 28/28 |
+| Seeded pairs | Vector | 25/28 | 28/28 | 28/28 |
+| Paraphrases with descriptions | Fuzzy | 4/18 | 4/18 | 4/18 |
+| Paraphrases with descriptions | Vector | 18/18 | 18/18 | 18/18 |
+| Paraphrases without lost descriptions | Fuzzy | 3/18 | 4/18 | 4/18 |
+| Paraphrases without lost descriptions | Vector | 16/18 | 17/18 | 17/18 |
+
+| Matcher | Reports with a suggestion despite no known counterpart | False alerts |
+|---|---:|---:|
+| Fuzzy | 5/12 | 2/12 |
+| Vector | 12/12 | 2/12 |
+
 ## Files
 
 ```
@@ -85,6 +105,7 @@ parser.js   one-line report parser
 seed.js     150 fake, anonymous records
 data.js     categories and synonyms, colour families, campus locations and map layout
 test.js     end-to-end test
+benchmark.js  fuzzy and vector accuracy comparison
 public/     frontend (index.html, styles.css, app.js)
 ```
 
